@@ -1,127 +1,236 @@
-## 1. System Architecture & Feature-Based Modular Design
+# Cognibloom Approach
 
-Cognibloom backend follows a clean, highly cohesive **feature-based (vertical slice)** architecture:
+## 1. Problem Understanding
 
+Cognibloom is a learning platform where a user can learn different topics by having an interactive session with the AI.
+
+The main problem we are trying to solve is that learning should not just be one question and one answer.
+
+We want to keep track of what the user is learning and what they asked so that the learning activity can be used later.
+
+The main user can be a student, fresher, or developer who wants to learn a new technology.
+
+Different users can have different levels of understanding. For example, a fresher may need simple explanations and real-life examples, while an experienced developer may prefer a shorter and more technical answer.
+
+The main user actions are:
+- Register and login
+- Create a topic
+- Start a learning session
+- Ask questions
+- Get an AI response
+- Give helpful or not helpful feedback
+- End the session
+- See learning activity on the dashboard
+
+For the prototype, I considered the main learning flow as:
+
+```text
+User → Topic → Session → Question → AI Response → Feedback
 ```
-src/
-├── config/                      # Environment variables & runtime config
-├── lib/                         # Shared libraries & singleton Prisma client
-├── types/                       # Shared domain & request types
-├── utils/                       # Common cryptographic & response utilities
-├── middleware/                  # Global Express middleware (Auth, Validation, Error Handling)
-├── features/                    # Self-contained domain modules
-│   ├── auth/                    # Auth: routes, controller, service, validator, types
-│   ├── topics/                  # Topics: routes, controller, service, validator
-│   ├── sessions/                # Sessions: routes, controller, service, validator
-│   ├── interactions/            # Interactions: routes, controller, service, validator, AI engine
-│   └── dashboard/               # Dashboard: routes, controller, service
-├── routes/                      # Main router mounting all feature routers
-├── app.ts                       # Express application bootstrap
-└── server.ts                    # HTTP server listener & graceful shutdown
+
+This was more important than adding many extra features.
+
+---
+
+## 2. Assumptions
+
+The requirements were open-ended, so I had to make some decisions.
+
+### Learning Sessions
+I assumed that one topic can have multiple sessions. For example:
+- **React**
+  - Session 1
+  - Session 2
+  - Session 3
+
+This allows the user to come back to the same topic later.
+
+### Interactions
+One interaction contains the user's question and the AI response. It also stores the mode, feedback, and timestamp.
+
+### Progress
+I did not treat progress as actual mastery. For now, progress means learning activity such as:
+- Number of topics
+- Number of sessions
+- Number of questions
+- Feedback (Helpful / Not Helpful)
+- Recent activity
+- Most studied topic
+
+I made this decision because simply asking more questions does not mean the user has mastered a topic.
+
+### AI
+For now we use mock AI responses because the requirement allows predefined responses. This lets us build and test the complete system without depending on an external AI API. A real LLM can be added later.
+
+### Learning Modes
+The system has four modes:
+- **LEARN**: Main mode for the prototype.
+- **CHALLENGE**: Scenario-based technical questions.
+- **EXPLAIN**: Step-by-step conceptual breakdowns.
+- **VALIDATE**: Evaluation of user answers.
+
+The other modes are kept in the design so they can be improved later.
+
+---
+
+## 3. Architecture
+
+I used a separate frontend and backend:
+
+```text
+User
+  ↓
+Next.js Frontend
+  ↓
+Express REST API
+  ↓
+Services
+  ↓
+Prisma
+  ↓
+PostgreSQL
 ```
 
-### Why Feature-Based Architecture?
-1. **High Cohesion**: All components related to a domain entity (e.g. `topics` validation, business logic, route handlers, and data transformations) live in the same directory.
-2. **Simplified Navigation & Cognitive Load**: Developers working on the `sessions` feature only navigate within `src/features/sessions/`.
-3. **Decoupled Evolution**: Domain modules can be developed, tested, or refactored independently without spilling across global folders.
-4. **Clean Cross-Feature Integration**: Features expose clear service and controller boundaries.
+The frontend is responsible for the UI and user interaction. The backend handles authentication, validation, business logic, and database operations.
+
+- **Next.js** for frontend: Provides clean routing and a solid React-based component structure.
+- **Express** for backend: Keeps the REST API straightforward and lightweight.
+- **Separation**: Keeping them separate means the backend API can later be used by other clients such as a mobile app.
+
+### Backend Structure
+
+I used a feature-based structure:
+
+```text
+backend/src/features/
+  ├── auth/
+  ├── topics/
+  ├── sessions/
+  ├── interactions/
+  └── dashboard/
+```
+
+Each feature contains the code related to that functionality (routes, controller, service, validator). For example, interaction-related logic stays inside the `interactions` feature. This keeps related code together and makes the project easier to understand and change.
 
 ---
 
-## 2. Request Flows & Lifecycles
+## 4. Database Design
 
-### A. Authentication Flow
-- **Registration (`POST /api/auth/register`):**
-  1. Input is validated by Zod (`email`, `username`, `password`).
-  2. Uniqueness of email and username is checked against PostgreSQL.
-  3. Password is salt-hashed using `bcryptjs` with 10 salt rounds.
-  4. User is persisted in the database; `passwordHash` is excluded from the returned payload.
-  5. A signed JWT containing `userId`, `email`, and `username` is issued and returned to the client.
-- **Login (`POST /api/auth/login`):**
-  1. Input is validated.
-  2. User is looked up via email or username.
-  3. Bcrypt verifies the plaintext candidate against the stored hash in constant time.
-  4. On match, a new JWT is returned.
+The main relationship is:
 
-### B. Topic Creation & Lookup Flow
-- **Create Topic (`POST /api/topics`):**
-  1. `auth.middleware` verifies the Bearer token and attaches `req.user`.
-  2. Service creates a new topic tied strictly to `req.user.userId`.
-- **List Topics (`GET /api/topics`):**
-  1. Filters by `userId: req.user.userId`.
-  2. Aggregates total session count and fetches the latest session status.
+```text
+User
+  ↓
+Topic
+  ↓
+Session
+  ↓
+Interaction
+```
 
-### C. Learning Session Lifecycle
-- **Start Session (`POST /api/topics/:topicId/sessions`):**
-  1. Verifies that `topic.userId === req.user.userId`.
-  2. Creates a session with `startedAt = new Date()` and `endedAt = null`.
-- **End Session (`PATCH /api/sessions/:sessionId/end`):**
-  1. Verifies ownership through `session.topic.userId === req.user.userId`.
-  2. Validates that the session is not already ended; if already ended, rejects with `400 Bad Request`.
-  3. Sets `endedAt = new Date()`.
+### Models
 
-### D. Interaction & Feedback Lifecycle
-- **Create Interaction (`POST /api/sessions/:sessionId/interactions`):**
-  1. Validates `mode` (`LEARN | CHALLENGE | EXPLAIN | VALIDATE`) and `question`.
-  2. Verifies session ownership through `session.topic.userId`.
-  3. Invokes `generateMockAIResponse` tailored to the mode and topic title.
-  4. Stores interaction with `feedback = null`.
-- **Feedback Rating (`PATCH /api/interactions/:interactionId/feedback`):**
-  1. Validates feedback enum (`HELPFUL | NOT_HELPFUL`).
-  2. Verifies ownership through `interaction.session.topic.userId === req.user.userId`.
-  3. Updates feedback state.
+- **User**: Stores learner information (`id`, `username`, `email`, `passwordHash`, `createdAt`).
+- **Topic**: Represents something the user wants to learn. It belongs to one user (`id`, `userId`, `title`, `createdAt`).
+- **Session**: Represents one learning session for a topic. It stores `id`, `topicId`, `startedAt`, `endedAt`. A topic can have multiple sessions.
+- **Interaction**: Stores one question and its AI response (`id`, `sessionId`, `mode`, `question`, `response`, `feedback`, `createdAt`).
 
-### E. Dashboard Metrics Aggregation Flow
-- **Retrieve Dashboard (`GET /api/dashboard`):**
-  1. Gathers 100% computed metrics from live database records for `req.user.userId`:
-     - Total topics created.
-     - Topics with active sessions.
-     - Total sessions initiated.
-     - Total questions/interactions submitted.
-     - Helpful vs. Not Helpful feedback counts and unrated questions.
-     - Interaction mode breakdown (`LEARN`, `CHALLENGE`, `EXPLAIN`, `VALIDATE`).
-     - Most studied topic (determined by session frequency and interaction depth).
-     - Chronological recent activity stream (latest 5 sessions & latest 5 interactions).
+I kept `sessionId` as the connection instead of storing `userId` and `topicId` again. So we can get the owner through:
+
+```text
+Interaction → Session → Topic → User
+```
+
+This avoids storing the same relationship multiple times and maintains a normalized schema.
+
+### Why PostgreSQL & Prisma
+
+- **PostgreSQL**: Chosen because learning data is relational with clear parent-child dependencies and cascade delete requirements.
+- **Prisma**: Chosen because it provides type-safe database queries with TypeScript and manages migrations easily.
 
 ---
 
-## 3. Security, Authorization & IDOR Prevention
+## 5. API Design & Security
 
-### Preventing Insecure Direct Object References (IDOR)
-In educational platforms, data isolation is paramount. We enforce IDOR prevention through:
+### Main Endpoints
 
-1. **Relational Path Traversal Verification:**
-   - Instead of checking merely if an ID exists in the database, our queries traverse the full hierarchy:
-     - `Session`: `session.topic.userId === req.user.userId`
-     - `Interaction`: `interaction.session.topic.userId === req.user.userId`
-2. **Obscuring Existence of Unauthorized Resources:**
-   - When a user requests an ID belonging to another user, we return `404 Not Found` rather than `403 Forbidden`. This prevents attackers from enumerating valid IDs of other users across the system.
-3. **No Direct Foreign Keys on Sub-Entities:**
-   - In accordance with the project constraints, `Interaction` holds only `sessionId`. `userId` and `topicId` are never duplicated onto `Interaction` but are derived safely through the relational chain.
+```text
+Auth
+  POST  /api/auth/register
+  POST  /api/auth/login
+  GET   /api/auth/me
+
+Topics
+  POST  /api/topics
+  GET   /api/topics
+  GET   /api/topics/:topicId
+
+Sessions
+  POST  /api/topics/:topicId/sessions
+  GET   /api/sessions/:sessionId
+  PATCH /api/sessions/:sessionId/end
+
+Interactions
+  POST  /api/sessions/:sessionId/interactions
+  GET   /api/sessions/:sessionId/interactions
+  PATCH /api/interactions/:interactionId/feedback
+
+Dashboard
+  GET   /api/dashboard
+```
+
+- **Feedback**: Kept as a separate `PATCH` request because feedback happens after the interaction is created.
+- **Pagination**: Used for interaction history since sessions can grow large over time.
+
+### Authentication & Authorization (IDOR Prevention)
+
+- **JWT**: After login, the user receives a JWT. Protected routes extract and verify the `userId` from the token.
+- **IDOR Protection**: The backend verifies ownership along the relational chain:
+  - For a session: checks `session.topic.userId === loggedInUserId`.
+  - For an interaction: checks `interaction.session.topic.userId === loggedInUserId`.
+  - If unauthorized or not found, it returns `404 Not Found` so users cannot discover or access other users' data.
+- **Validation**: Passwords are salt-hashed with bcrypt. Zod validates request bodies and query parameters at the API boundary.
 
 ---
 
-## 4. Error Handling & Validation Philosophy
+## 6. Dashboard, AI Approach & Future Evolution
 
-1. **Zod Validation Middleware:**
-   - Automatically intercepts invalid payloads before they reach controllers.
-   - Translates Zod errors into clean, field-specific arrays (e.g. `{ field: "email", message: "Invalid email address" }`).
-2. **Prisma Error Translation:**
-   - Converts raw Prisma error codes (`P2002`, `P2025`, `P2003`) into meaningful HTTP responses (`409 Conflict`, `404 Not Found`, `400 Bad Request`).
-3. **Security Invariant:**
-   - In production (`NODE_ENV === 'production'`), unhandled 500 error stack traces are suppressed to avoid disclosing internal server structure.
+### Dashboard & Progress
+The dashboard calculates activity metrics directly from the database:
+- Total topics, sessions, and questions
+- Feedback distribution (helpful vs. not helpful)
+- Interaction modes breakdown
+- Most studied topic
+- Recent 5 sessions and interactions
+
+I did not create a fake percentage (e.g. "React progress 82%") because question counts do not equal subject mastery. A future version can evaluate challenge and validation results to produce a meaningful score.
+
+### AI Engine
+- **Current**: Deterministic, mode-aware mock generator. The response adapts to the selected mode (`LEARN`, `CHALLENGE`, `EXPLAIN`, `VALIDATE`) and topic title.
+- **Future Integration**: The service layer isolates AI generation, so swapping the mock with a live LLM (Gemini or OpenAI) requires changing only the AI service without restructuring controllers or database tables:
+
+```text
+Interaction Service → AI Service → Real LLM
+```
+
+### Scalability & Next Steps
+
+1. **Database & Cache**: As data grows, add composite indexes on interactions, connection pooling (PgBouncer), and Redis caching for dashboard queries.
+2. **Horizontal Scaling**: The stateless Express API can scale across multiple instances behind a load balancer.
+3. **Async Queues**: Heavy AI requests can be offloaded to worker queues (e.g., BullMQ) with streaming updates (Server-Sent Events).
+4. **Next 24 Hours Focus**:
+   - **High Priority**: Integrate live LLM, improve interactive session UI, add integration tests.
+   - **Next**: Stream AI responses, rate limiting, advanced mastery calculation.
+   - **Later**: Spaced repetition, recommendation engine, background workers.
 
 ---
 
-## 5. Mock AI Design & Future LLM Integration
+## Summary
 
-The current mock AI engine (`src/utils/aiMock.ts`) provides differentiated, structured responses according to the selected mode:
-- **`LEARN`**: Explores fundamentals, core mechanisms, and practical applications.
-- **`CHALLENGE`**: Formulates scenario-based technical questions and architectural constraints.
-- **`EXPLAIN`**: Provides mental models and step-by-step conceptual breakdowns.
-- **`VALIDATE`**: Evaluates correctness, points out optimization opportunities, and evaluates security.
+The main goal was to establish a solid core learning loop:
 
-### Future LLM Extensibility:
-When migrating to live LLMs (e.g. Google Gemini 1.5 Flash / Pro):
-- Simply swap or wrap `aiMock.ts` with a service implementing a common interface `IAIService { generateResponse(topic, mode, question): Promise<string> }`.
-- No controller, route, or database schema changes are required.
+```text
+User → Topic → Session → Question → AI Response → Feedback → Dashboard Analytics
+```
+
+Instead of building an overly complex system all at once, I focused on clean architecture, reliable persistence, stateless authentication, and user data isolation. This provides a robust foundation that can easily incorporate live AI models and adaptive learning features.
